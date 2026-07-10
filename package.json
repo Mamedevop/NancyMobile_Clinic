@@ -1,11 +1,16 @@
 {
   "name": "nancymobile",
   "version": "1.0.7",
+  "description": "NancyMobile Clinic - Mobile accessories and repair shop",
   "scripts": {
-    "build": "npm install --prefix backend/src",
-    "start": "node backend/src/server.js"
+    "install:all": "npm install --prefix backend/src --legacy-peer-deps && npm install --prefix frontend --legacy-peer-deps",
+    "build": "npm install --prefix backend/src --legacy-peer-deps && npm install --prefix frontend --legacy-peer-deps && npm run build --prefix frontend",
+    "start": "node backend/src/server.js",
+    "dev:backend": "npm run dev --prefix backend/src",
+    "dev:frontend": "npm run dev --prefix frontend"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
   }
 }

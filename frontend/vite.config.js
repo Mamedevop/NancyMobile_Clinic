@@ -15,6 +15,19 @@ export default defineConfig({
       '@hooks': path.resolve(__dirname, './src/hooks')
     }
   },
+  build: {
+    outDir: 'dist',
+    emptyOutDir: true,
+    sourcemap: false,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom', 'react-router-dom'],
+          charts: ['chart.js', 'react-chartjs-2']
+        }
+      }
+    }
+  },
   server: {
     port: 3000,
     proxy: {

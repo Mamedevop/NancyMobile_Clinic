@@ -1,28 +1,34 @@
-# Dependencies
+# Dependencies — never commit these
 node_modules/
 frontend/node_modules/
 backend/src/node_modules/
 
-# Environment files (keep examples, ignore actual .env)
+# Environment files — keep examples, NEVER commit real .env
 .env
 backend/src/.env
 frontend/.env
+frontend/.env.local
 
-# Build output
-# frontend/dist/  # Committed for Railway deployment
+# Build output — Railway builds this via nixpacks, so exclude from git
+frontend/dist/
 frontend/build/
 
-# Uploads (user-generated files)
+# Uploads (user-generated files stored in DB as base64 anyway)
 backend/src/uploads/
 
 # Logs
 *.log
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# OS
+# OS / Editor
 .DS_Store
 Thumbs.db
-
-# IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+
+# Railway / deployment temp files
+push_to_github.ps1

@@ -157,10 +157,21 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Static files
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Serve built frontend
-const frontendDist = path.join(__dirname, '../../frontend/dist');
-if (require('fs').existsSync(frontendDist)) {
+// Serve built frontend — try relative to server.js first, then cwd (Railway)
+const possibleDistPaths = [
+    path.join(__dirname, '../../frontend/dist'),       // local: backend/src -> root -> frontend/dist
+    path.join(process.cwd(), 'frontend/dist'),          // Railway: cwd is repo root
+    path.join(process.cwd(), 'dist'),                   // fallback
+];
+let frontendDist = null;
+for (const p of possibleDistPaths) {
+    if (require('fs').existsSync(p)) { frontendDist = p; break; }
+}
+if (frontendDist) {
+    console.log('✅ Serving frontend from:', frontendDist);
     app.use(express.static(frontendDist));
+} else {
+    console.log('⚠️  Frontend dist not found — API-only mode');
 }
 
 // Health check endpoint
@@ -239,10 +250,10 @@ app.use('/api/setup', setupRoutes);
 // Error handling middleware
 app.use(errorHandler);
 
-// 404 handler - serve frontend for non-API routes (SPA)
+// 404 handler - serve frontend for non-API routes (SPA fallback)
 app.use('*', (req, res) => {
-    if (!req.originalUrl.startsWith('/api')) {
-        const indexPath = path.join(__dirname, '../../frontend/dist/index.html');
+    if (!req.originalUrl.startsWith('/api') && frontendDist) {
+        const indexPath = path.join(frontendDist, 'index.html');
         if (require('fs').existsSync(indexPath)) {
             return res.sendFile(indexPath);
         }
