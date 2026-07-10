@@ -70,36 +70,55 @@ app.get('/api/health', (req, res) => {
 
 // ─── DEBUG endpoint — shows exact startup error ───────────────────────────────
 app.get('/api/debug', (req, res) => {
+    const dbUrl = process.env.DATABASE_URL;
     res.json({
         dbReady: global.dbReady || false,
         dbError: global.dbError || null,
-        missingVars,
-        env: {
-            NODE_ENV: process.env.NODE_ENV,
-            DATABASE_URL: process.env.DATABASE_URL ? '✅ set' : '❌ MISSING',
-            JWT_SECRET: process.env.JWT_SECRET ? '✅ set' : '⚠️ using default',
-            PORT: process.env.PORT,
-        }
+        DATABASE_URL: dbUrl
+            ? `✅ SET (${dbUrl.split('@')[1] || 'connected'})` // show host only, not credentials
+            : '❌ NOT SET — Add PostgreSQL plugin in Railway dashboard',
+        JWT_SECRET: process.env.JWT_SECRET ? '✅ set' : '⚠️ using insecure default',
+        NODE_ENV: process.env.NODE_ENV || 'not set',
+        PORT: process.env.PORT || 5000,
+        solution: !dbUrl
+            ? 'Go to railway.app → your project → click + New → Database → PostgreSQL. It will auto-inject DATABASE_URL.'
+            : global.dbReady
+            ? 'All good!'
+            : 'DATABASE_URL is set but DB not ready yet — wait 10s and retry, or check Railway PostgreSQL service is running.'
     });
 });
+
+// ─── DB-READY GATE — returns 503 with clear message if DB not connected ───────
+const dbGate = (req, res, next) => {
+    if (!global.dbReady) {
+        return res.status(503).json({
+            success: false,
+            message: global.dbError || 'Database is still connecting. Please wait a moment and retry.',
+            hint: !process.env.DATABASE_URL
+                ? 'DATABASE_URL is not set. Go to Railway → your project → add a PostgreSQL database plugin.'
+                : 'Database is connecting, please retry in a few seconds.'
+        });
+    }
+    next();
+};
 
 // ─── IMPORT & REGISTER ROUTES ─────────────────────────────────────────────────
 const { authenticate } = require('./middlewares/auth.middleware');
 const { errorHandler } = require('./middlewares/error.middleware');
 
-app.use('/api/auth',       require('./routes/auth.routes'));
-app.use('/api/users',      authenticate, require('./routes/user.routes'));
-app.use('/api/products',   require('./routes/product.routes'));
-app.use('/api/categories', require('./routes/category.routes'));
-app.use('/api/orders',     authenticate, require('./routes/order.routes'));
-app.use('/api/cart',       authenticate, require('./routes/cart.routes'));
-app.use('/api/payments',   authenticate, require('./routes/payment.routes'));
-app.use('/api/admin',      authenticate, require('./routes/admin.routes'));
-app.use('/api/repairs',    authenticate, require('./routes/repair.routes'));
-app.use('/api/technician', authenticate, require('./routes/technician.routes'));
-app.use('/api/chat',       authenticate, require('./routes/chat.routes'));
-app.use('/api/delivery',   authenticate, require('./routes/delivery.routes'));
-app.use('/api/setup',      require('./routes/setup.routes'));
+app.use('/api/auth',       dbGate, require('./routes/auth.routes'));
+app.use('/api/users',      dbGate, authenticate, require('./routes/user.routes'));
+app.use('/api/products',   dbGate, require('./routes/product.routes'));
+app.use('/api/categories', dbGate, require('./routes/category.routes'));
+app.use('/api/orders',     dbGate, authenticate, require('./routes/order.routes'));
+app.use('/api/cart',       dbGate, authenticate, require('./routes/cart.routes'));
+app.use('/api/payments',   dbGate, authenticate, require('./routes/payment.routes'));
+app.use('/api/admin',      dbGate, authenticate, require('./routes/admin.routes'));
+app.use('/api/repairs',    dbGate, authenticate, require('./routes/repair.routes'));
+app.use('/api/technician', dbGate, authenticate, require('./routes/technician.routes'));
+app.use('/api/chat',       dbGate, authenticate, require('./routes/chat.routes'));
+app.use('/api/delivery',   dbGate, authenticate, require('./routes/delivery.routes'));
+app.use('/api/setup',      dbGate, require('./routes/setup.routes'));
 
 // ─── INIT ENDPOINT — seed DB and create admin ─────────────────────────────────
 app.get('/api/init', async (req, res) => {
