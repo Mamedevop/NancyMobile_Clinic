@@ -1,0 +1,11 @@
+{
+  "name": "nancymobile",
+  "version": "1.0.7",
+  "scripts": {
+    "build": "npm install --prefix backend/src",
+    "start": "node backend/src/server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
