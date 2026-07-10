@@ -7,106 +7,107 @@ const rateLimit = require('express-rate-limit');
 const path = require('path');
 const fs = require('fs');
 
-// Import routes
-const authRoutes = require('./routes/auth.routes');
-const userRoutes = require('./routes/user.routes');
-const productRoutes = require('./routes/product.routes');
-const categoryRoutes = require('./routes/category.routes');
-const orderRoutes = require('./routes/order.routes');
-const cartRoutes = require('./routes/cart.routes');
-const paymentRoutes = require('./routes/payment.routes');
-const adminRoutes = require('./routes/admin.routes');
-const repairRoutes = require('./routes/repair.routes');
-const technicianRoutes = require('./routes/technician.routes');
-const setupRoutes = require('./routes/setup.routes');
-const chatRoutes = require('./routes/chat.routes');
-const deliveryRoutes = require('./routes/delivery.routes');
-
-// Import middleware
-const { errorHandler } = require('./middlewares/error.middleware');
-const { authenticate } = require('./middlewares/auth.middleware');
-
-// Database connection
-const { connectDB, query } = require('./config/database');
-
-// ─── Initialize Express FIRST so Railway healthcheck passes immediately ──────
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Security middleware
+// ─── STARTUP VALIDATION ───────────────────────────────────────────────────────
+const missingVars = [];
+if (!process.env.DATABASE_URL && !process.env.DB_HOST) missingVars.push('DATABASE_URL');
+if (!process.env.JWT_SECRET) console.warn('⚠️  JWT_SECRET not set — using insecure default');
+
+if (missingVars.length > 0) {
+    console.error('❌ MISSING REQUIRED ENV VARS:', missingVars.join(', '));
+    console.error('   Go to Railway → your service → Variables tab → add DATABASE_URL');
+    console.error('   (Add a PostgreSQL plugin to your project and it auto-injects DATABASE_URL)');
+}
+
+// ─── MIDDLEWARE ───────────────────────────────────────────────────────────────
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(compression());
+app.use(cors({ origin: process.env.FRONTEND_URL || true, credentials: true }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Rate limiting
-const limiter = rateLimit({
+// Rate limiting — more generous for Railway
+app.use('/api/', rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 500,
     standardHeaders: true,
     legacyHeaders: false,
-    message: 'Too many requests, please try again later.'
-});
-app.use('/api/', limiter);
-
-// CORS
-app.use(cors({
-    origin: process.env.FRONTEND_URL || true,
-    credentials: true,
-    optionsSuccessStatus: 200
 }));
 
-// Body parsing
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// Static uploads folder
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
-
-// Serve built React frontend
-const possibleDistPaths = [
+// ─── SERVE FRONTEND DIST ──────────────────────────────────────────────────────
+const distCandidates = [
     path.join(__dirname, '../../frontend/dist'),
     path.join(process.cwd(), 'frontend/dist'),
     path.join(process.cwd(), 'dist'),
 ];
-let frontendDist = null;
-for (const p of possibleDistPaths) {
-    if (fs.existsSync(p)) { frontendDist = p; break; }
-}
+const frontendDist = distCandidates.find(p => fs.existsSync(p)) || null;
 if (frontendDist) {
-    console.log('✅ Serving frontend from:', frontendDist);
-    app.use(express.static(frontendDist));
+    console.log('✅ Frontend dist:', frontendDist);
+    app.use(express.static(frontendDist, { maxAge: '1d' }));
 } else {
-    console.log('⚠️  Frontend dist not found — API-only mode');
+    console.log('⚠️  No frontend/dist found — running API-only mode');
 }
 
-// ─── Health check — always responds immediately (Railway needs this) ─────────
+// ─── HEALTH CHECK — always responds, Railway needs this ──────────────────────
 app.get('/api/health', (req, res) => {
     res.status(200).json({
         status: 'OK',
+        service: 'NancyMobile API',
+        version: '1.0.8',
         timestamp: new Date().toISOString(),
-        service: 'Nancy Mobile API',
-        version: '1.0.7',
-        db: global.dbReady ? 'connected' : 'initializing'
+        db: global.dbReady ? 'connected' : (global.dbError || 'connecting'),
+        env: {
+            node_env: process.env.NODE_ENV || 'not set',
+            has_db_url: !!process.env.DATABASE_URL,
+            has_jwt: !!process.env.JWT_SECRET,
+            port: PORT,
+        }
     });
 });
 
-// ─── API Routes ───────────────────────────────────────────────────────────────
-app.use('/api/auth', authRoutes);
-app.use('/api/users', authenticate, userRoutes);
-app.use('/api/products', productRoutes);
-app.use('/api/categories', categoryRoutes);
-app.use('/api/orders', authenticate, orderRoutes);
-app.use('/api/cart', authenticate, cartRoutes);
-app.use('/api/payments', authenticate, paymentRoutes);
-app.use('/api/admin', authenticate, adminRoutes);
-app.use('/api/repairs', authenticate, repairRoutes);
-app.use('/api/technician', authenticate, technicianRoutes);
-app.use('/api/chat', authenticate, chatRoutes);
-app.use('/api/delivery', authenticate, deliveryRoutes);
-app.use('/api/setup', setupRoutes);
+// ─── DEBUG endpoint — shows exact startup error ───────────────────────────────
+app.get('/api/debug', (req, res) => {
+    res.json({
+        dbReady: global.dbReady || false,
+        dbError: global.dbError || null,
+        missingVars,
+        env: {
+            NODE_ENV: process.env.NODE_ENV,
+            DATABASE_URL: process.env.DATABASE_URL ? '✅ set' : '❌ MISSING',
+            JWT_SECRET: process.env.JWT_SECRET ? '✅ set' : '⚠️ using default',
+            PORT: process.env.PORT,
+        }
+    });
+});
 
-// One-time init endpoint
+// ─── IMPORT & REGISTER ROUTES ─────────────────────────────────────────────────
+const { authenticate } = require('./middlewares/auth.middleware');
+const { errorHandler } = require('./middlewares/error.middleware');
+
+app.use('/api/auth',       require('./routes/auth.routes'));
+app.use('/api/users',      authenticate, require('./routes/user.routes'));
+app.use('/api/products',   require('./routes/product.routes'));
+app.use('/api/categories', require('./routes/category.routes'));
+app.use('/api/orders',     authenticate, require('./routes/order.routes'));
+app.use('/api/cart',       authenticate, require('./routes/cart.routes'));
+app.use('/api/payments',   authenticate, require('./routes/payment.routes'));
+app.use('/api/admin',      authenticate, require('./routes/admin.routes'));
+app.use('/api/repairs',    authenticate, require('./routes/repair.routes'));
+app.use('/api/technician', authenticate, require('./routes/technician.routes'));
+app.use('/api/chat',       authenticate, require('./routes/chat.routes'));
+app.use('/api/delivery',   authenticate, require('./routes/delivery.routes'));
+app.use('/api/setup',      require('./routes/setup.routes'));
+
+// ─── INIT ENDPOINT — seed DB and create admin ─────────────────────────────────
 app.get('/api/init', async (req, res) => {
+    if (!global.dbReady) {
+        return res.status(503).send('<h2>Database not ready yet.</h2><p>Error: ' + (global.dbError || 'still connecting') + '</p><p>Check Railway → your service → Variables → ensure DATABASE_URL is set.</p>');
+    }
     try {
+        const { query } = require('./config/database');
         const bcrypt = require('bcryptjs');
         const { v4: uuidv4 } = require('uuid');
         await query(`INSERT INTO roles (name) VALUES ('admin'),('customer'),('technician'),('delivery_person') ON CONFLICT (name) DO NOTHING`);
@@ -118,56 +119,93 @@ app.get('/api/init', async (req, res) => {
         if (existing.rows.length > 0) {
             await query(`UPDATE users SET password_hash=$1, is_active=true, is_verified=true, verification_status='verified', role_id=$2 WHERE LOWER(email)='namcy@gmail.com'`, [hash, adminRole.rows[0].id]);
         } else {
-            await query(`INSERT INTO users (id, email, password_hash, first_name, last_name, role_id, is_active, is_verified, verification_status, created_at) VALUES ($1,$2,$3,'Nancy','Admin',$4,true,true,'verified',NOW())`, [uuidv4(), 'Namcy@gmail.com', hash, adminRole.rows[0].id]);
+            await query(`INSERT INTO users (id,email,password_hash,first_name,last_name,role_id,is_active,is_verified,verification_status,created_at) VALUES ($1,$2,$3,'Nancy','Admin',$4,true,true,'verified',NOW())`, [uuidv4(), 'Namcy@gmail.com', hash, adminRole.rows[0].id]);
         }
-        const users = await query(`SELECT email FROM users`);
-        res.send('<h2>Done!</h2><p>Admin: Namcy@gmail.com / admin@123</p><p>Users: ' + users.rows.map(u => u.email).join(', ') + '</p><p><a href="/">Go to App</a></p>');
+        const users = await query(`SELECT email, role_id FROM users`);
+        res.send(`<h2 style="color:green">✅ Done!</h2>
+<p><strong>Admin login:</strong> Namcy@gmail.com / admin@123</p>
+<p><strong>All users:</strong> ${users.rows.map(u => u.email).join(', ')}</p>
+<p><a href="/">→ Go to App</a></p>`);
     } catch (err) {
-        res.status(500).send('<h2>Error: ' + err.message + '</h2>');
+        res.status(500).send('<h2>❌ Error</h2><pre>' + err.message + '</pre>');
     }
 });
 
-// API docs
-app.get('/api/docs', (req, res) => {
-    res.json({ message: 'Nancy Mobile API', version: '1.0.7', health: '/api/health' });
-});
-
-// Error handler
+// ─── ERROR HANDLER ────────────────────────────────────────────────────────────
 app.use(errorHandler);
 
-// SPA fallback — must be last
+// ─── SPA FALLBACK ─────────────────────────────────────────────────────────────
 app.use('*', (req, res) => {
     if (!req.originalUrl.startsWith('/api') && frontendDist) {
-        const indexPath = path.join(frontendDist, 'index.html');
-        if (fs.existsSync(indexPath)) return res.sendFile(indexPath);
+        const idx = path.join(frontendDist, 'index.html');
+        if (fs.existsSync(idx)) return res.sendFile(idx);
     }
     res.status(404).json({ success: false, message: 'Not found' });
 });
 
-// ─── START SERVER FIRST, then init DB in background ──────────────────────────
+// ─── START SERVER (immediately, before DB connects) ───────────────────────────
 global.dbReady = false;
+global.dbError = null;
 
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Server listening on 0.0.0.0:${PORT}`);
-    console.log(`📊 Health: http://localhost:${PORT}/api/health`);
+const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Server on port ${PORT}`);
+    console.log(`🔗 DATABASE_URL: ${process.env.DATABASE_URL ? 'SET ✅' : 'NOT SET ❌'}`);
 
-    // Init DB after server is already accepting connections
+    if (!process.env.DATABASE_URL && !process.env.DB_HOST) {
+        global.dbError = 'DATABASE_URL environment variable is not set. Add PostgreSQL plugin in Railway.';
+        console.error('❌ ' + global.dbError);
+        return; // Don't try to connect — server stays up for healthcheck
+    }
+
+    // Connect DB after server is listening
     initDB().catch(err => {
-        console.error('❌ DB init failed:', err.message);
+        global.dbError = err.message;
+        console.error('❌ DB init error:', err.message);
     });
 });
 
-// ─── Database init (runs after server starts) ─────────────────────────────────
-async function initDB() {
-    console.log('🔄 Connecting to database...');
-    await connectDB();
-    console.log('✅ DB connected, running migrations...');
+server.keepAliveTimeout = 120000;
+server.headersTimeout = 120000;
 
+// ─── DB INIT ──────────────────────────────────────────────────────────────────
+async function initDB() {
+    const { connectDB, query } = require('./config/database');
+
+    console.log('🔄 Connecting to PostgreSQL...');
+    await connectDB();
+
+    // Create all tables
     try {
         await query(`CREATE TABLE IF NOT EXISTS roles (id SERIAL PRIMARY KEY, name VARCHAR(50) UNIQUE NOT NULL, permissions TEXT[] DEFAULT '{}')`);
-        await query(`CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), email VARCHAR(255) UNIQUE NOT NULL, password_hash VARCHAR(255) NOT NULL, first_name VARCHAR(100), last_name VARCHAR(100), phone VARCHAR(20), address TEXT, role_id INTEGER REFERENCES roles(id), is_active BOOLEAN DEFAULT true, is_verified BOOLEAN DEFAULT false, verification_status VARCHAR(50) DEFAULT 'unverified', national_id VARCHAR(100), fan_number VARCHAR(100), profile_picture TEXT, national_id_file TEXT, is_available BOOLEAN DEFAULT false, last_login TIMESTAMP, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW())`);
+        await query(`CREATE TABLE IF NOT EXISTS users (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            email VARCHAR(255) UNIQUE NOT NULL,
+            password_hash VARCHAR(255) NOT NULL,
+            first_name VARCHAR(100), last_name VARCHAR(100),
+            phone VARCHAR(20), address TEXT,
+            role_id INTEGER REFERENCES roles(id),
+            is_active BOOLEAN DEFAULT true,
+            is_verified BOOLEAN DEFAULT false,
+            verification_status VARCHAR(50) DEFAULT 'unverified',
+            national_id VARCHAR(100), fan_number VARCHAR(100),
+            profile_picture TEXT, national_id_file TEXT,
+            is_available BOOLEAN DEFAULT false,
+            last_login TIMESTAMP,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
+        )`);
         await query(`CREATE TABLE IF NOT EXISTS categories (id SERIAL PRIMARY KEY, name VARCHAR(100) NOT NULL, slug VARCHAR(100) UNIQUE NOT NULL, description TEXT, created_at TIMESTAMP DEFAULT NOW())`);
-        await query(`CREATE TABLE IF NOT EXISTS products (id SERIAL PRIMARY KEY, name VARCHAR(255) NOT NULL, description TEXT, short_description TEXT, price DECIMAL(10,2) NOT NULL, stock_quantity INTEGER DEFAULT 0, category_id INTEGER REFERENCES categories(id), image_url TEXT, image_urls JSONB DEFAULT '[]', sku VARCHAR(100), brand VARCHAR(100), specifications JSONB DEFAULT '{}', features JSONB DEFAULT '[]', is_featured BOOLEAN DEFAULT false, is_active BOOLEAN DEFAULT true, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW())`);
+        await query(`CREATE TABLE IF NOT EXISTS products (
+            id SERIAL PRIMARY KEY, name VARCHAR(255) NOT NULL,
+            description TEXT, short_description TEXT,
+            price DECIMAL(10,2) NOT NULL, stock_quantity INTEGER DEFAULT 0,
+            category_id INTEGER REFERENCES categories(id),
+            image_url TEXT, image_urls JSONB DEFAULT '[]',
+            sku VARCHAR(100), brand VARCHAR(100),
+            specifications JSONB DEFAULT '{}', features JSONB DEFAULT '[]',
+            is_featured BOOLEAN DEFAULT false, is_active BOOLEAN DEFAULT true,
+            created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW()
+        )`);
         await query(`CREATE TABLE IF NOT EXISTS cart (id SERIAL PRIMARY KEY, user_id UUID REFERENCES users(id) ON DELETE CASCADE, is_active BOOLEAN DEFAULT true, created_at TIMESTAMP DEFAULT NOW())`);
         await query(`CREATE TABLE IF NOT EXISTS cart_items (id SERIAL PRIMARY KEY, cart_id INTEGER REFERENCES cart(id) ON DELETE CASCADE, product_id INTEGER REFERENCES products(id), quantity INTEGER NOT NULL DEFAULT 1, created_at TIMESTAMP DEFAULT NOW())`);
         await query(`CREATE TABLE IF NOT EXISTS orders (id SERIAL PRIMARY KEY, order_number VARCHAR(50) UNIQUE NOT NULL, user_id UUID REFERENCES users(id), total_amount DECIMAL(10,2) NOT NULL, status VARCHAR(50) DEFAULT 'pending', shipping_address TEXT, payment_method VARCHAR(50), created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW())`);
@@ -181,59 +219,45 @@ async function initDB() {
         await query(`CREATE TABLE IF NOT EXISTS parts_requests (id SERIAL PRIMARY KEY, technician_id UUID REFERENCES users(id), part_name VARCHAR(200) NOT NULL, quantity INTEGER DEFAULT 1, repair_id INTEGER REFERENCES repairs(id), notes TEXT, admin_notes TEXT, status VARCHAR(50) DEFAULT 'pending', created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW())`);
         await query(`CREATE TABLE IF NOT EXISTS parts_usage (id SERIAL PRIMARY KEY, technician_id UUID REFERENCES users(id), part_id INTEGER REFERENCES spare_parts(id), repair_id INTEGER REFERENCES repairs(id), quantity INTEGER DEFAULT 1, used_at TIMESTAMP DEFAULT NOW())`);
         await query(`CREATE TABLE IF NOT EXISTS repair_reviews (id SERIAL PRIMARY KEY, repair_id INTEGER UNIQUE REFERENCES repairs(id), technician_id UUID REFERENCES users(id), customer_id UUID REFERENCES users(id), rating INTEGER CHECK(rating BETWEEN 1 AND 5), comment TEXT, created_at TIMESTAMP DEFAULT NOW())`);
-
-        // Safe migrations
-        const safeMigrations = [
-            `ALTER TABLE users ADD COLUMN IF NOT EXISTS is_available BOOLEAN DEFAULT false`,
-            `ALTER TABLE users ADD COLUMN IF NOT EXISTS national_id_file TEXT`,
-            `ALTER TABLE payments ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()`,
-            `ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_method VARCHAR(50)`,
-            `ALTER TABLE repairs ADD COLUMN IF NOT EXISTS assigned_to UUID`,
-            `ALTER TABLE repairs ADD COLUMN IF NOT EXISTS notes TEXT`,
-            `ALTER TABLE repairs ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP`,
-        ];
-        for (const sql of safeMigrations) {
-            try { await query(sql); } catch (_) {}
-        }
-        console.log('✅ Migrations complete');
+        console.log('✅ Tables created');
     } catch (e) {
-        console.log('⚠️ Migration error:', e.message);
+        console.log('⚠️ Table creation error (may already exist):', e.message);
     }
 
-    // Seed data
+    // Seed
     try {
         await query(`INSERT INTO roles (name) VALUES ('admin'),('customer'),('technician'),('delivery_person') ON CONFLICT (name) DO NOTHING`);
         await query(`INSERT INTO categories (name, slug) VALUES ('Cases','cases'),('Screen Protectors','screen-protectors'),('Chargers','chargers'),('Audio','audio'),('Power Banks','power-banks'),('Smart Watches','smart-watches'),('Repair Services','repair-services') ON CONFLICT (slug) DO NOTHING`);
         await query(`INSERT INTO bank_settings (bank_key, bank_name, account_number, account_name, is_active) VALUES ('cbe','Commercial Bank of Ethiopia','1000123456789','Nancy Mobile PLC',true),('abyssinia','Bank of Abyssinia','0123456789','Nancy Mobile PLC',true),('awash','Awash Bank','0123456789012','Nancy Mobile PLC',true) ON CONFLICT (bank_key) DO NOTHING`);
-        console.log('✅ Seed data applied');
+        console.log('✅ Seed data done');
     } catch (e) {
-        console.log('⚠️ Seed skipped:', e.message);
+        console.log('⚠️ Seed error:', e.message);
     }
 
-    // Admin account
+    // Admin user
     try {
         const bcrypt = require('bcryptjs');
         const { v4: uuidv4 } = require('uuid');
         const hash = await bcrypt.hash('admin@123', 10);
-        const adminRole = await query(`SELECT id FROM roles WHERE name = 'admin'`);
-        if (adminRole.rows.length > 0) {
-            const existing = await query(`SELECT id FROM users WHERE LOWER(email) = 'namcy@gmail.com'`);
+        const roleRes = await query(`SELECT id FROM roles WHERE name='admin'`);
+        if (roleRes.rows.length > 0) {
+            const existing = await query(`SELECT id FROM users WHERE LOWER(email)='namcy@gmail.com'`);
             if (existing.rows.length > 0) {
                 await query(`UPDATE users SET password_hash=$1, is_active=true, is_verified=true, verification_status='verified' WHERE LOWER(email)='namcy@gmail.com'`, [hash]);
-                console.log('✅ Admin updated: Namcy@gmail.com / admin@123');
             } else {
-                await query(`INSERT INTO users (id,email,password_hash,first_name,last_name,role_id,is_active,is_verified,verification_status,created_at) VALUES ($1,$2,$3,'Nancy','Admin',$4,true,true,'verified',NOW())`, [uuidv4(), 'Namcy@gmail.com', hash, adminRole.rows[0].id]);
-                console.log('✅ Admin created: Namcy@gmail.com / admin@123');
+                await query(`INSERT INTO users (id,email,password_hash,first_name,last_name,role_id,is_active,is_verified,verification_status,created_at) VALUES ($1,$2,$3,'Nancy','Admin',$4,true,true,'verified',NOW())`, [uuidv4(), 'Namcy@gmail.com', hash, roleRes.rows[0].id]);
             }
+            console.log('✅ Admin ready: Namcy@gmail.com / admin@123');
         }
     } catch (e) {
-        console.log('⚠️ Admin seed skipped:', e.message);
+        console.log('⚠️ Admin setup error:', e.message);
     }
 
     global.dbReady = true;
-    console.log('✅ Database fully initialized');
+    global.dbError = null;
+    console.log('✅ DB fully initialized');
 
-    // Keep DB alive — ping every 4 minutes
+    // Keep-alive ping every 4 min
     setInterval(async () => {
         try { await query('SELECT 1'); } catch (e) { console.log('DB ping failed:', e.message); }
     }, 4 * 60 * 1000);
